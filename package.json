@@ -22,6 +22,7 @@
     "productName": "Restorch",
     "electronDist": "node_modules/electron/dist",
     "asar": true,
+    "compression": "maximum",
     "directories": {
       "output": "dist"
     },
@@ -66,7 +67,30 @@
         "filter": [
           "bin/**/*",
           "lib/**/*",
-          "share/**/*"
+          "share/**/*",
+          "!share/doc/**",
+          "!share/locale/**",
+          "!bin/stackbuilder.exe",
+          "!bin/pgbench.exe",
+          "!bin/ecpg.exe",
+          "!bin/pg_upgrade.exe",
+          "!bin/pg_basebackup.exe",
+          "!bin/pg_receivewal.exe",
+          "!bin/pg_recvlogical.exe",
+          "!bin/pg_createsubscriber.exe",
+          "!bin/pg_combinebackup.exe",
+          "!bin/pg_verifybackup.exe",
+          "!bin/pg_waldump.exe",
+          "!bin/pg_walsummary.exe",
+          "!bin/pg_rewind.exe",
+          "!bin/pg_test_fsync.exe",
+          "!bin/pg_test_timing.exe",
+          "!bin/clusterdb.exe",
+          "!bin/reindexdb.exe",
+          "!bin/vacuumdb.exe",
+          "!bin/vacuumlo.exe",
+          "!bin/oid2name.exe",
+          "!bin/test_cloexec.exe"
         ]
       },
       {
@@ -84,7 +108,28 @@
           "**/*",
           "!**/*.map",
           "!**/*.d.ts",
-          "!@types/**/*"
+          "!**/*.md",
+          "!@types/**/*",
+          "!typescript/**/*",
+          "!@typescript-eslint/**/*",
+          "!eslint/**/*",
+          "!@eslint/**/*",
+          "!jest/**/*",
+          "!@jest/**/*",
+          "!ts-jest/**/*",
+          "!ts-node/**/*",
+          "!prettier/**/*",
+          "!@swc/**/*",
+          "!@nestjs/cli/**/*",
+          "!@nestjs/schematics/**/*",
+          "!@nestjs/testing/**/*",
+          "!supertest/**/*",
+          "!hygen/**/*",
+          "!husky/**/*",
+          "!release-it/**/*",
+          "!@release-it/**/*",
+          "!@commitlint/**/*",
+          "!env-cmd/**/*"
         ]
       },
       {

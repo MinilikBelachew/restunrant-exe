@@ -128,7 +128,12 @@ fs.writeFileSync(
 );
 
 try {
-  execFileSync(electronExe, [tmpCompiler], { stdio: 'inherit' });
+  const electronEnv = { ...process.env };
+  delete electronEnv.ELECTRON_RUN_AS_NODE;
+  execFileSync(electronExe, [tmpCompiler], {
+    stdio: 'inherit',
+    env: electronEnv,
+  });
 } finally {
   fs.rmSync(tmpCompiler, { force: true });
 }
