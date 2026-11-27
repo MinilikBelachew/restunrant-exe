@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require('electron');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -17,6 +17,7 @@ let tray = null;
 let backendProc = null;
 let frontendProc = null;
 let isQuitting = false;
+let autoUpdaterInstance = null;
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -58,6 +59,113 @@ function appendLog(logPath, msg) {
     fs.appendFileSync(logPath, line, 'utf8');
   } catch {
     // ignore
+  }
+}
+
+function getLocalHardwareHash() {
+  let machineGuid = '';
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync(
+        'reg',
+        ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
+        { encoding: 'utf8', windowsHide: true, timeout: 3000 },
+      );
+      const match = out.match(/MachineGuid\s+REG_\w+\s+([^\r\n]+)/i);
+      if (match && match[1]) machineGuid = match[1].trim();
+    } catch {
+      // fallback below
+    }
+  }
+  const cpuModel = (os.cpus()[0] && os.cpus()[0].model) || '';
+  const raw = machineGuid
+    ? `win-guid:${machineGuid}:${os.arch()}`
+    : `host:${os.hostname()}:${os.platform()}:${os.arch()}:${cpuModel}`;
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function getEmbeddedPublicKey(paths) {
+  const packagedPem = path.join(__dirname, 'license-public-key.pem');
+  if (fs.existsSync(packagedPem)) {
+    return fs.readFileSync(packagedPem, 'utf8');
+  }
+  const devPem = path.join(paths.resourcesDir, 'restunrant-exe', 'license-public-key.pem');
+  if (fs.existsSync(devPem)) {
+    return fs.readFileSync(devPem, 'utf8');
+  }
+  return '';
+}
+
+async function verifyDesktopHardwareLicense(paths, hardwareHash) {
+  const psql = path.join(paths.pgBinDir, 'psql.exe');
+  let localTenantId = '';
+  try {
+    const res = await execPromise(psql, [
+      '-h',
+      '127.0.0.1',
+      '-p',
+      String(PG_PORT),
+      '-U',
+      'postgres',
+      '-d',
+      DB_NAME,
+      '-tAc',
+      'SELECT id::text FROM public.tenants LIMIT 1',
+    ]);
+    localTenantId = res.stdout.trim();
+  } catch {
+    return;
+  }
+
+  // Brand-new PC before first-time setup has no tenant rows yet
+  if (!localTenantId) {
+    return;
+  }
+
+  const licensePath = path.join(paths.userDataDir, 'license.json');
+  if (!fs.existsSync(licensePath)) {
+    throw new Error(
+      'Missing offline license file (license.json) for this restaurant database.\nPlease run First-Time Setup on this computer or contact platform support.',
+    );
+  }
+
+  let license;
+  try {
+    license = JSON.parse(fs.readFileSync(licensePath, 'utf8'));
+  } catch {
+    throw new Error('Corrupted offline license file (license.json).');
+  }
+
+  const publicKeyPem = getEmbeddedPublicKey(paths);
+  if (!publicKeyPem) {
+    throw new Error('Missing embedded license public key.');
+  }
+
+  const canonical = JSON.stringify({
+    version: license.version,
+    tenantId: license.tenantId,
+    hardwareHash: license.hardwareHash,
+    deviceLabel: license.deviceLabel || 'POS-PC',
+    issuedAt: license.issuedAt,
+  });
+
+  const sigValid = crypto.verify(
+    null,
+    Buffer.from(canonical, 'utf8'),
+    crypto.createPublicKey(publicKeyPem),
+    Buffer.from(String(license.signature || ''), 'base64'),
+  );
+
+  if (!sigValid) {
+    throw new Error('Invalid desktop license signature.');
+  }
+  if (license.hardwareHash !== hardwareHash) {
+    throw new Error(
+      'This Restorch installation is locked to a different computer hardware ID.\nAsk Super Admin to reset the Desktop Device License to move to this PC.',
+    );
+  }
+  if (license.tenantId !== localTenantId) {
+    throw new Error('Desktop license does not match the restaurant database on this PC.');
   }
 }
 
@@ -144,6 +252,7 @@ function ensureUserEnv(paths) {
     OFFLINE_SYNC_ENABLED: 'false',
     OFFLINE_DESKTOP: 'true',
     REDIS_ENABLED: 'false',
+    DESKTOP_HARDWARE_HASH: getLocalHardwareHash(),
   };
 
   // Always update dynamic local values (FRONTEND_DOMAIN, DATABASE_URL, APP_PORT, offline flags)
@@ -154,6 +263,7 @@ function ensureUserEnv(paths) {
     'DATABASE_PORT',
     'OFFLINE_DESKTOP',
     'REDIS_ENABLED',
+    'DESKTOP_HARDWARE_HASH',
   ]);
 
   for (const [key, val] of Object.entries(defaults)) {
@@ -452,6 +562,26 @@ function createTray(paths) {
       label: `Tablet URLs: ${lanUrls.length ? lanUrls.join(', ') : 'localhost:' + FRONTEND_PORT}`,
       enabled: false,
     },
+    {
+      label: 'Check for Updates...',
+      click: () => {
+        if (!app.isPackaged || !autoUpdaterInstance) {
+          dialog.showMessageBox({
+            type: 'info',
+            title: 'Restorch Updates',
+            message: 'Automatic updates are enabled in the packaged Windows installer.',
+          });
+          return;
+        }
+        autoUpdaterInstance.checkForUpdates().catch((err) => {
+          dialog.showMessageBox({
+            type: 'warning',
+            title: 'Update Check',
+            message: `Could not reach update server: ${err.message}`,
+          });
+        });
+      },
+    },
     { type: 'separator' },
     {
       label: 'Quit Restorch (Stops Server)',
@@ -504,6 +634,57 @@ app.on('second-instance', () => {
   }
 });
 
+function setupAutoUpdater(paths) {
+  if (!app.isPackaged) return;
+  try {
+    const { autoUpdater } = require('electron-updater');
+    autoUpdaterInstance = autoUpdater;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('checking-for-update', () => {
+      appendLog(paths.logPath, '[updater] Checking for updates...');
+    });
+    autoUpdater.on('update-available', (info) => {
+      appendLog(paths.logPath, `[updater] Update available: v${info.version}`);
+    });
+    autoUpdater.on('update-not-available', () => {
+      appendLog(paths.logPath, '[updater] App is up to date.');
+    });
+    autoUpdater.on('error', (err) => {
+      appendLog(paths.logPath, `[updater] Notice: ${err.message}`);
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      appendLog(paths.logPath, `[updater] Downloaded v${info.version}. Prompting user...`);
+      dialog
+        .showMessageBox(mainWindow || undefined, {
+          type: 'info',
+          buttons: ['Restart & Update Now', 'Later (On Quit)'],
+          defaultId: 0,
+          title: 'Restorch Update Ready',
+          message: `Restorch v${info.version} has been downloaded.`,
+          detail: 'Your restaurant database and settings will be preserved automatically.',
+        })
+        .then((res) => {
+          if (res.response === 0) {
+            isQuitting = true;
+            autoUpdater.quitAndInstall();
+          }
+        })
+        .catch(() => {});
+    });
+
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 15_000);
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 4 * 60 * 60 * 1000).unref();
+  } catch (err) {
+    appendLog(paths.logPath, `[updater] Init skipped: ${err.message}`);
+  }
+}
+
 if (gotTheLock) {
   app.whenReady().then(async () => {
     const paths = getPaths();
@@ -517,10 +698,12 @@ if (gotTheLock) {
 
     createWindow(paths);
     createTray(paths);
+    setupAutoUpdater(paths);
 
     try {
       const envVars = ensureUserEnv(paths);
       await startPostgres(paths, envVars);
+      await verifyDesktopHardwareLicense(paths, envVars.DESKTOP_HARDWARE_HASH);
       startBackend(paths, envVars);
       await waitForHttp(
         `http://127.0.0.1:${BACKEND_PORT}/backend/v1/sync/status`,

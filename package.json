@@ -2,23 +2,45 @@
   "name": "restorch-desktop",
   "version": "1.0.0",
   "description": "Restorch Offline POS Desktop Server & Client",
-  "main": "main.js",
+  "main": "entry.js",
   "scripts": {
     "start": "electron .",
-    "build:exe": "electron-builder --win"
+    "build:protect": "node scripts/protect-build.js",
+    "build:exe": "node scripts/protect-build.js && electron-builder --win"
   },
-  "dependencies": {},
+  "dependencies": {
+    "bytenode": "^1.5.7",
+    "electron-updater": "^6.3.9"
+  },
   "devDependencies": {
     "electron": "^35.1.5",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.0"
   },
   "build": {
     "appId": "com.restorch.pos",
     "productName": "Restorch",
     "electronDist": "node_modules/electron/dist",
+    "asar": true,
     "directories": {
       "output": "dist"
     },
+    "files": [
+      "entry.js",
+      "main.jsc",
+      "license-public-key.pem",
+      "package.json",
+      "node_modules/**/*",
+      "!main.js",
+      "!scripts/**/*",
+      "!build-staging/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://restaurant.learnica.net/desktop-updates"
+      }
+    ],
     "win": {
       "target": [
         {
@@ -48,7 +70,7 @@
         ]
       },
       {
-        "from": "../fanaye-resturant-backend/dist",
+        "from": "build-staging/backend-dist",
         "to": "backend/dist"
       },
       {
@@ -61,6 +83,7 @@
         "filter": [
           "**/*",
           "!**/*.map",
+          "!**/*.d.ts",
           "!@types/**/*"
         ]
       },
@@ -99,4 +122,3 @@
     ]
   }
 }
-

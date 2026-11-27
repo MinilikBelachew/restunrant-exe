@@ -1,5 +1,8 @@
 node_modules/
 dist/
+build-staging/
+main.jsc
+.compile-electron-main.cjs
 *.log
 .DS_Store
 Thumbs.db
