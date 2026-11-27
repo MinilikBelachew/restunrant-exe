@@ -80,24 +80,24 @@ execFileSync(electronExe, ['-e', compileBackendScript], {
 });
 fs.rmSync(bundlePath, { force: true });
 
-// Ensure require('bytenode') resolves from backend/dist regardless of backend node_modules
-const backendDistNodeModules = path.join(stagingBackendDist, 'node_modules');
-fs.mkdirSync(backendDistNodeModules, { recursive: true });
-for (const pkgName of ['bytenode', 'commander']) {
-  try {
-    const pkgJson = require.resolve(`${pkgName}/package.json`);
-    const pkgDir = path.dirname(pkgJson);
-    fs.cpSync(pkgDir, path.join(backendDistNodeModules, pkgName), {
-      recursive: true,
-    });
-  } catch {
-    // optional
-  }
-}
+// Bundle bytenode runtime into a standalone file next to main.jsc
+// (electron-builder strips nested node_modules inside extraResources)
+const bytenodeRuntimeOut = path.join(stagingBackendDist, 'bytenode.cjs');
+esbuild.buildSync({
+  entryPoints: [require.resolve('bytenode')],
+  outfile: bytenodeRuntimeOut,
+  bundle: true,
+  platform: 'node',
+  target: 'node22',
+  format: 'cjs',
+  minify: true,
+  sourcemap: false,
+  logLevel: 'silent',
+});
 
 fs.writeFileSync(
   path.join(stagingBackendDist, 'main.js'),
-  `'use strict';\nrequire('bytenode');\nrequire('./main.jsc');\n`,
+  `'use strict';\nrequire('./bytenode.cjs');\nrequire('./main.jsc');\n`,
   'utf8',
 );
 
