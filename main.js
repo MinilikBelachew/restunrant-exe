@@ -10,7 +10,7 @@ const PG_PORT = 5433;
 const BACKEND_PORT = 3001;
 const FRONTEND_PORT = 3000;
 const DB_NAME = 'restorch';
-const CLOUD_URL = 'https://restorch.com';
+const CLOUD_URL = 'https://restaurant.learnica.net';
 
 let mainWindow = null;
 let tray = null;
@@ -127,7 +127,7 @@ function ensureUserEnv(paths) {
     FILE_DRIVER: 'local',
     MAIL_HOST: 'localhost',
     MAIL_PORT: '1025',
-    MAIL_DEFAULT_EMAIL: 'noreply@restorch.com',
+    MAIL_DEFAULT_EMAIL: 'noreply@restaurant.learnica.net',
     MAIL_DEFAULT_NAME: '"Restorch"',
     MAIL_IGNORE_TLS: 'true',
     MAIL_SECURE: 'false',
@@ -142,10 +142,19 @@ function ensureUserEnv(paths) {
     AUTH_CONFIRM_EMAIL_TOKEN_EXPIRES_IN: '1d',
     CLOUD_SYNC_URL: CLOUD_URL,
     OFFLINE_SYNC_ENABLED: 'false',
+    OFFLINE_DESKTOP: 'true',
+    REDIS_ENABLED: 'false',
   };
 
-  // Always update dynamic local values (FRONTEND_DOMAIN, DATABASE_URL, APP_PORT)
-  const alwaysUpdate = new Set(['FRONTEND_DOMAIN', 'DATABASE_URL', 'APP_PORT', 'DATABASE_PORT']);
+  // Always update dynamic local values (FRONTEND_DOMAIN, DATABASE_URL, APP_PORT, offline flags)
+  const alwaysUpdate = new Set([
+    'FRONTEND_DOMAIN',
+    'DATABASE_URL',
+    'APP_PORT',
+    'DATABASE_PORT',
+    'OFFLINE_DESKTOP',
+    'REDIS_ENABLED',
+  ]);
 
   for (const [key, val] of Object.entries(defaults)) {
     const regex = new RegExp(`^${key}=.*$`, 'm');
@@ -212,32 +221,63 @@ async function startPostgres(paths, envVars) {
     ]);
   }
 
-  appendLog(paths.logPath, `Starting PostgreSQL on port ${PG_PORT}...`);
-  await new Promise((resolve) => {
-    const pgProc = spawn(
-      pgCtl,
-      ['-D', paths.pgDataDir, '-o', `-p ${PG_PORT}`, '-l', paths.pgLogPath, 'start'],
-      {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      },
-    );
-    pgProc.on('error', (err) => {
-      appendLog(paths.logPath, `pg_ctl start notice: ${err.message}`);
-      resolve();
-    });
-    pgProc.on('exit', () => resolve());
-    pgProc.unref();
-  });
+  let pgReady = false;
+  try {
+    await execPromise(pgIsReady, ['-h', '127.0.0.1', '-p', String(PG_PORT), '-U', 'postgres']);
+    pgReady = true;
+    appendLog(paths.logPath, `PostgreSQL already running on port ${PG_PORT}.`);
+  } catch {
+    pgReady = false;
+  }
 
-  // Wait for Postgres readiness
-  for (let i = 0; i < 30; i++) {
-    try {
-      await execPromise(pgIsReady, ['-h', '127.0.0.1', '-p', String(PG_PORT), '-U', 'postgres']);
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 500));
+  if (!pgReady) {
+    // Recover from stale postmaster.pid left behind after a power loss or crash
+    const pidPath = path.join(paths.pgDataDir, 'postmaster.pid');
+    if (fs.existsSync(pidPath)) {
+      try {
+        await execPromise(pgCtl, ['-D', paths.pgDataDir, 'status']);
+      } catch {
+        appendLog(paths.logPath, 'Removing stale PostgreSQL postmaster.pid after unclean shutdown...');
+        try {
+          fs.unlinkSync(pidPath);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    appendLog(paths.logPath, `Starting PostgreSQL on port ${PG_PORT}...`);
+    await new Promise((resolve) => {
+      const pgProc = spawn(
+        pgCtl,
+        ['-D', paths.pgDataDir, '-o', `-p ${PG_PORT}`, '-l', paths.pgLogPath, 'start'],
+        {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        },
+      );
+      pgProc.on('error', (err) => {
+        appendLog(paths.logPath, `pg_ctl start notice: ${err.message}`);
+        resolve();
+      });
+      pgProc.on('exit', () => resolve());
+      pgProc.unref();
+    });
+
+    // Wait for Postgres readiness
+    for (let i = 0; i < 40; i++) {
+      try {
+        await execPromise(pgIsReady, ['-h', '127.0.0.1', '-p', String(PG_PORT), '-U', 'postgres']);
+        pgReady = true;
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    if (!pgReady) {
+      throw new Error(`PostgreSQL failed to start on port ${PG_PORT}. Check ${paths.pgLogPath}`);
     }
   }
 
