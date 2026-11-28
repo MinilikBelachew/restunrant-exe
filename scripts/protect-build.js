@@ -6,6 +6,9 @@ const { execFileSync } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 const backendDir = path.resolve(rootDir, '..', 'fanaye-resturant-backend');
+const frontendDir = path.resolve(rootDir, '..', 'fanaye-resturant');
+const frontendStandalone = path.join(frontendDir, '.next', 'standalone', 'server.js');
+const frontendChunksDir = path.join(frontendDir, '.next', 'static', 'chunks');
 const backendDistDir = path.join(backendDir, 'dist');
 const backendEntry = path.join(backendDistDir, 'main.js');
 const stagingBackendDist = path.join(rootDir, 'build-staging', 'backend-dist');
@@ -21,6 +24,22 @@ if (!fs.existsSync(backendEntry)) {
   throw new Error(
     `Backend build not found at ${backendEntry}. Run "npm run build" in fanaye-resturant-backend first.`,
   );
+}
+if (!fs.existsSync(frontendStandalone)) {
+  throw new Error(
+    `Frontend standalone build not found at ${frontendStandalone}. Build fanaye-resturant with NEXT_PUBLIC_API_URL=http://localhost:3001/backend/v1 first.`,
+  );
+}
+if (fs.existsSync(frontendChunksDir)) {
+  for (const file of fs.readdirSync(frontendChunksDir)) {
+    if (!file.endsWith('.js')) continue;
+    const content = fs.readFileSync(path.join(frontendChunksDir, file), 'utf8');
+    if (content.includes('localhost:5000')) {
+      throw new Error(
+        `Frontend chunk ${file} has dev URL "localhost:5000" baked in! Rebuild fanaye-resturant with NEXT_PUBLIC_API_URL=http://localhost:3001/backend/v1, NEXT_PUBLIC_APP_URL=http://localhost:3000, NEXT_PUBLIC_SOCKET_URL=http://localhost:3001.`,
+      );
+    }
+  }
 }
 if (!fs.existsSync(electronExe)) {
   throw new Error(

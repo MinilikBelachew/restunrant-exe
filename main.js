@@ -14,6 +14,7 @@ const CLOUD_URL = 'https://restaurant.learnica.net';
 
 let mainWindow = null;
 let tray = null;
+let pgProc = null;
 let backendProc = null;
 let frontendProc = null;
 let isQuitting = false;
@@ -310,11 +311,16 @@ function ensureUserEnv(paths) {
 }
 
 async function startPostgres(paths, envVars) {
+  const postgresExe = path.join(paths.pgBinDir, 'postgres.exe');
   const initdb = path.join(paths.pgBinDir, 'initdb.exe');
   const pgCtl = path.join(paths.pgBinDir, 'pg_ctl.exe');
   const pgIsReady = path.join(paths.pgBinDir, 'pg_isready.exe');
   const psql = path.join(paths.pgBinDir, 'psql.exe');
   const createdb = path.join(paths.pgBinDir, 'createdb.exe');
+
+  if (!fs.existsSync(postgresExe)) {
+    throw new Error(`PostgreSQL binary not found at ${postgresExe}`);
+  }
 
   if (!fs.existsSync(path.join(paths.pgDataDir, 'PG_VERSION'))) {
     appendLog(paths.logPath, 'Initializing PostgreSQL cluster...');
@@ -357,23 +363,28 @@ async function startPostgres(paths, envVars) {
     }
 
     appendLog(paths.logPath, `Starting PostgreSQL on port ${PG_PORT}...`);
-    await new Promise((resolve) => {
-      const pgProc = spawn(
-        pgCtl,
-        ['-D', paths.pgDataDir, '-o', `-p ${PG_PORT}`, '-l', paths.pgLogPath, 'start'],
-        {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-        },
-      );
-      pgProc.on('error', (err) => {
-        appendLog(paths.logPath, `pg_ctl start notice: ${err.message}`);
-        resolve();
-      });
-      pgProc.on('exit', () => resolve());
-      pgProc.unref();
+    const pgLogFd = fs.openSync(paths.pgLogPath, 'a');
+    pgProc = spawn(
+      postgresExe,
+      ['-D', paths.pgDataDir, '-p', String(PG_PORT)],
+      {
+        detached: false,
+        stdio: ['ignore', pgLogFd, pgLogFd],
+        windowsHide: true,
+      },
+    );
+    pgProc.on('error', (err) => {
+      appendLog(paths.logPath, `PostgreSQL process error: ${err.message}`);
     });
+    pgProc.on('exit', (code) => {
+      appendLog(paths.logPath, `PostgreSQL exited with code ${code}`);
+      pgProc = null;
+    });
+    try {
+      fs.closeSync(pgLogFd);
+    } catch {
+      // ignore
+    }
 
     // Wait for Postgres readiness
     for (let i = 0; i < 40; i++) {
@@ -436,12 +447,21 @@ async function startPostgres(paths, envVars) {
 
 async function stopPostgres(paths) {
   const pgCtl = path.join(paths.pgBinDir, 'pg_ctl.exe');
-  if (!fs.existsSync(pgCtl) || !fs.existsSync(paths.pgDataDir)) return;
-  try {
-    await execPromise(pgCtl, ['-D', paths.pgDataDir, 'stop', '-m', 'fast']);
-    appendLog(paths.logPath, 'PostgreSQL stopped cleanly.');
-  } catch (err) {
-    appendLog(paths.logPath, `PostgreSQL stop notice: ${err.message}`);
+  if (fs.existsSync(pgCtl) && fs.existsSync(paths.pgDataDir)) {
+    try {
+      await execPromise(pgCtl, ['-D', paths.pgDataDir, 'stop', '-m', 'fast']);
+      appendLog(paths.logPath, 'PostgreSQL stopped cleanly.');
+    } catch (err) {
+      appendLog(paths.logPath, `PostgreSQL stop notice: ${err.message}`);
+    }
+  }
+  if (pgProc) {
+    try {
+      pgProc.kill();
+    } catch {
+      // ignore
+    }
+    pgProc = null;
   }
 }
 
